@@ -1,0 +1,312 @@
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/imu.hpp>
+#include <std_msgs/msg/float32.hpp>
+#include <visualization_msgs/msg/marker.hpp>
+#include <tf2/LinearMath/Quaternion.h>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
+#include<random>
+#include <eigen3/Eigen/Dense>
+#include <iostream>
+#include <cmath>
+
+using namespace std;
+
+const double WHEEL_RADIUS = 0.2525;
+const double L_R = 0.765;
+const double L_F = 0.765;
+
+class ExtendedKalmanFilterNode : public rclcpp::Node
+{
+public:
+    ExtendedKalmanFilterNode() : Node("motion_update_node")
+    {
+        imu_sub_ = this->create_subscription<sensor_msgs::msg::Imu>(
+            "/imu", 10,
+            std::bind(&ExtendedKalmanFilterNode::imuCallback, this, std::placeholders::_1));
+
+        wheel_sub_ = this->create_subscription<std_msgs::msg::Float32>(
+            "/wheel_speed_avg", 10,
+            std::bind(&ExtendedKalmanFilterNode::wheelSpeedCallback, this, std::placeholders::_1));
+
+        marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(
+            "/car_marker", 10);
+        ellipse_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(
+            "/covariance_ellipse", 10);
+
+        cone_sub_ = this->create_subscription<visualization_msgs::msg::MarkerArray>(
+            "/ground_truth_cones", 10,
+            std::bind(&ExtendedKalmanFilterNode::measurementCallback, this, std::placeholders::_1));
+
+        RCLCPP_INFO(this->get_logger(), "Motion update node started. Waiting for messages...");
+
+        X_ << 0.0, 0.0, 0.0;
+
+        P_ = Eigen::Matrix3d::Identity() * 0.1;
+        Q_ = Eigen::Matrix3d::Identity() * 0.01;
+        R_ = Eigen::Matrix2d::Identity() * 0.5;
+    }
+
+private:
+    rclcpp::Time last_imu_time_, last_wheel_time_;
+    bool first_imu_ = true, first_wheel_ = true;
+    double last_v_ = 0.0;
+    Eigen::Vector3d X_;
+
+    Eigen::Matrix3d P_;
+
+    Eigen::Matrix3d Q_;
+
+    Eigen::Matrix2d R_;
+
+    std::vector<std::pair<double, double>> cone_positions_;
+    bool track_received_ = false;
+    std::vector<std::pair<double, double>> gt_cones_;
+
+    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr wheel_sub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr marker_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr ellipse_pub_;
+    rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr cone_sub_;
+
+ void publishCovarianceEllipse()
+{
+    Eigen::Matrix2d Pxy = P_.block<2,2>(0,0);
+
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> solver(Pxy);
+
+    if(solver.info() != Eigen::Success)
+    {
+        RCLCPP_WARN(this->get_logger(), "Eigen decomposition failed");
+        return;
+    }
+
+    Eigen::Vector2d eigenvalues = solver.eigenvalues();
+    Eigen::Matrix2d eigenvectors = solver.eigenvectors();
+
+    if(eigenvalues(0) <= 0 || eigenvalues(1) <= 0)
+    {
+        RCLCPP_WARN(this->get_logger(),
+                    "Invalid covariance eigenvalues");
+        return;
+    }
+
+    double major = 2.0 * sqrt(eigenvalues(1));
+    double minor = 2.0 * sqrt(eigenvalues(0));
+
+    double angle = atan2(eigenvectors(1,1), eigenvectors(0,1));
+
+    visualization_msgs::msg::Marker ellipse;
+
+    ellipse.header.frame_id = "map";
+    ellipse.header.stamp = now();
+
+    ellipse.ns = "covariance";
+    ellipse.id = 0;
+
+    ellipse.type = visualization_msgs::msg::Marker::CYLINDER;
+    ellipse.action = visualization_msgs::msg::Marker::ADD;
+
+    ellipse.pose.position.x = X_(0);
+    ellipse.pose.position.y = X_(1);
+    ellipse.pose.position.z = 0.1;
+
+    tf2::Quaternion q;
+    q.setRPY(0.0, 0.0, angle);
+
+    ellipse.pose.orientation.x = q.x();
+    ellipse.pose.orientation.y = q.y();
+    ellipse.pose.orientation.z = q.z();
+    ellipse.pose.orientation.w = q.w();
+
+    ellipse.scale.x = major;
+    ellipse.scale.y = minor;
+    ellipse.scale.z = 0.05;
+
+    ellipse.color.r = 1.0;
+    ellipse.color.g = 0.0;
+    ellipse.color.b = 0.0;
+    ellipse.color.a = 1.0;
+
+    ellipse.lifetime = rclcpp::Duration::from_seconds(0);
+
+    ellipse_pub_->publish(ellipse);
+
+    RCLCPP_INFO(this->get_logger(),
+                "Published ellipse %.3f %.3f",
+                major, minor);
+}
+  
+
+    void imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
+    {
+        rclcpp::Time current_time = this->get_clock()->now();
+        if (first_imu_)
+        {
+            last_imu_time_ = current_time;
+            first_imu_ = false;
+            return;
+        }
+
+        double dt = (current_time - last_imu_time_).seconds();
+        double omega = msg->angular_velocity.z;
+
+        double v= last_v_;
+
+        double psi = X_(2);
+
+        
+    Eigen::Matrix3d F;
+    F << 1, 0, -v * sin(psi) * dt,
+         0, 1,  v * cos(psi) * dt,
+         0, 0,  1;
+
+    P_ = F * P_ * F.transpose() + Q_;
+
+    X_(2) += omega * dt;
+
+
+        last_imu_time_ = current_time;
+
+        publishCovarianceEllipse();
+
+        RCLCPP_INFO(this->get_logger(), "IMU received! omega: %f", msg->angular_velocity.z);
+    }
+
+    void wheelSpeedCallback(const std_msgs::msg::Float32::SharedPtr msg)
+    {
+        rclcpp::Time current_time = this->get_clock()->now();
+        if (first_wheel_)
+        {
+            last_wheel_time_ = current_time;
+            first_wheel_ = false;
+            return;
+        }
+
+        double dt = (current_time - last_wheel_time_).seconds();
+        double rpm = msg->data;
+        double v = rpm * (2.0 * M_PI * WHEEL_RADIUS) / 60.0;
+
+        last_v_ = v;
+
+        double psi = X_(2);
+
+        
+        Eigen::Matrix3d F;
+
+        F << 1, 0, -v * sin(X_(2)) * dt,
+            0, 1, v * cos(X_(2)) * dt,
+            0, 0, 1;
+
+        X_(0) += v * cos(psi) * dt;
+        X_(1) += v * sin(psi) * dt;
+
+     
+
+        P_ = F * P_ * F.transpose() + Q_;
+
+        last_wheel_time_ = current_time;
+     
+        publishCovarianceEllipse();
+    }
+    void measurementCallback(const visualization_msgs::msg::MarkerArray::SharedPtr msg)
+    {
+        gt_cones_.clear();
+    for (auto &marker : msg->markers)
+    {
+        gt_cones_.emplace_back(marker.pose.position.x, marker.pose.position.y);
+    }
+        if (gt_cones_.empty())
+            return;
+        double x = X_(0);
+        double y = X_(1);
+        double psi = X_(2);
+        
+        for (auto &cone : gt_cones_){
+        double Cx = cone.first;
+        double Cy = cone.second;
+
+
+        double dx = Cx - X_(0);
+        double dy = Cy - X_(1);
+
+      
+
+        Eigen::Matrix<double, 2, 3> H;
+
+        H(0, 0) = -cos(psi);
+        H(0, 1) = -sin(psi);
+        H(0, 2) = -sin(psi) * dx + cos(psi) * dy;
+
+        H(1, 0) = sin(psi);
+        H(1, 1) = -cos(psi);
+        H(1, 2) = -cos(psi) * dx - sin(psi) * dy;
+
+
+        Eigen::Vector2d z;
+        z(0) = cos(psi) * dx + sin(psi) * dy;
+        z(1) = -sin(psi) * dx + cos(psi) * dy;
+      
+        Eigen::Vector2d z_pred;
+        z(0) = cos(psi) * dx + sin(psi) * dy;
+        z(1) = -sin(psi) * dx + cos(psi) * dy;
+
+        Eigen::Vector2d y_k;
+        y_k = z - z_pred;
+
+
+        Eigen::Matrix2d S;
+        S = H * P_ * H.transpose() + R_;
+
+        Eigen::Matrix<double, 3, 2> K;
+        K = P_ * H.transpose() * S.ldlt().solve(Eigen::Matrix2d::Identity());
+
+        std::cout << "Kalman Gain K:\n"
+                  << K << std::endl;
+
+        X_ = X_ + K * y_k;
+
+        x   = X_(0);
+        y   = X_(1);
+        psi = X_(2);
+
+
+        Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
+        P_ = (I - K * H) * P_;
+
+        while (X_(2) > M_PI)
+            X_(2) -= 2 * M_PI;
+        while (X_(2) < -M_PI)
+            X_(2) += 2 * M_PI;
+         
+
+        RCLCPP_INFO(this->get_logger(),
+                    "EKF Update → x: %.2f, y: %.2f, psi: %.2f",
+                    X_(0), X_(1), X_(2));
+
+        
+        cout << "Z:\n"
+             << z << endl;
+        cout << "Z_pred:\n"
+             << z_pred << endl;
+        cout << "Innovation y:\n"
+             << y_k << endl;
+        cout << "S:\n"
+             << S << endl;
+        cout << "K:\n"
+             << K << endl;
+             
+        cout << "x: " << X_(0) << "  y: " << X_(1) << "  psi: " << X_(2) << endl;
+         }
+        publishCovarianceEllipse();
+    }
+};
+
+int main(int argc, char **argv)
+{
+    rclcpp::init(argc, argv);
+    rclcpp::spin(std::make_shared<ExtendedKalmanFilterNode>());
+    rclcpp::shutdown();
+    return 0;
+}

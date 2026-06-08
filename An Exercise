@@ -249,8 +249,8 @@ private:
         z(1) = -sin(psi) * dx + cos(psi) * dy;
       
         Eigen::Vector2d z_pred;
-        z_pred(0) = -cos(psi)*X_(0) - sin(psi)*X_(1) + (-sin(psi)*dx + cos(psi)*dy)*X_(2);
-        z_pred(1) =  sin(psi)*X_(0) - cos(psi)*X_(1) + (-cos(psi)*dx - sin(psi)*dy)*X_(2);
+        z(0) = cos(psi) * dx + sin(psi) * dy;
+        z(1) = -sin(psi) * dx + cos(psi) * dy;
 
         Eigen::Vector2d y_k;
         y_k = z - z_pred;

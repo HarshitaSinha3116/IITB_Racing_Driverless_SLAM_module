@@ -6,6 +6,7 @@
 #include <tf2/LinearMath/Quaternion.h>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
+#include<random>
 #include <eigen3/Eigen/Dense>
 #include <iostream>
 #include <cmath>
@@ -167,6 +168,7 @@ private:
         X_(0) += v * cos(psi) * dt;
         X_(1) += v * sin(psi) * dt;
 
+     
 
         P_ = F * P_ * F.transpose() + Q_;
 
@@ -186,30 +188,15 @@ private:
         double y = X_(1);
         double psi = X_(2);
         
-         for (auto &cone : gt_cones_){
+        for (auto &cone : gt_cones_){
         double Cx = cone.first;
         double Cy = cone.second;
-       
-        double dx = Cx - x;
-        double dy = Cy - y;
 
-        Eigen::Vector2d z;
 
-        z(0) = cos(psi) * dx + sin(psi) * dy;
-        z(1) = -sin(psi) * dx + cos(psi) * dy;
+        double dx = Cx - X_(0);
+        double dy = Cy - X_(1);
 
-        //z(0) += 0.1;
-        //z(1) += -0.1;
-
-        Eigen::Vector2d z_pred;
-
-        z_pred(0) = cos(psi) * dx + sin(psi) * dy;
-        z_pred(1) = -sin(psi) * dx + cos(psi) * dy;
-
-        
       
-        Eigen::Vector2d y_k;
-        y_k = z - z_pred;
 
         Eigen::Matrix<double, 2, 3> H;
 
@@ -220,6 +207,20 @@ private:
         H(1, 0) = sin(psi);
         H(1, 1) = -cos(psi);
         H(1, 2) = -cos(psi) * dx - sin(psi) * dy;
+
+
+        Eigen::Vector2d z;
+        z(0) = cos(psi) * dx + sin(psi) * dy;
+        z(1) = -sin(psi) * dx + cos(psi) * dy;
+  
+    
+        Eigen::Vector2d z_pred;
+        z(0) = cos(psi) * dx + sin(psi) * dy;
+        z(1) = -sin(psi) * dx + cos(psi) * dy;
+   
+        Eigen::Vector2d y_k;
+        y_k = z - z_pred;
+
 
         Eigen::Matrix2d S;
         S = H * P_ * H.transpose() + R_;
@@ -251,7 +252,7 @@ private:
                     X_(0), X_(1), X_(2));
 
         publishArrowHead();
-
+/*
         cout << "Z:\n"
              << z << endl;
         cout << "Z_pred:\n"
@@ -262,6 +263,9 @@ private:
              << S << endl;
         cout << "K:\n"
              << K << endl;
+             */
+             
+        cout << "x: " << X_(0) << "  y: " << X_(1) << "  psi: " << X_(2) << endl;
          }
     }
 

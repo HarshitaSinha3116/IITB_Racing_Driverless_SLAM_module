@@ -220,17 +220,16 @@ def MaxLikelihoodAndIndividualComp(perceived_cones, real_cones,cov=None, R=None,
     S = cov + R
     S_inv = np.linalg.inv(S)
     det_S = np.linalg.det(S)
-
+    
     matches = []
 
     for p in perceived_cones:
         best_index = -1
         best_lik = -np.inf
-
+        
         for j, r in enumerate(real_cones):
             innovation = np.array([p[0] - r[0], p[1] - r[1]])
             d2 = innovation @ S_inv @ innovation.T
-
             if d2 > gate_threshold:   # individual compatibility gate
                 continue
 
@@ -239,9 +238,8 @@ def MaxLikelihoodAndIndividualComp(perceived_cones, real_cones,cov=None, R=None,
             if lik > best_lik:
                 best_lik = lik
                 best_index = j
-
+                
         matches.append(best_index)
-
     return np.array(matches)
 
 def main():
